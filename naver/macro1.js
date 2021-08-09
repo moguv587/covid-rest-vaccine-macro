@@ -152,7 +152,7 @@ var vaccineMacro = {
       while (bussiness = res.shift()) {
         let hasQuantity = false;
         business.vaccineQuantity.list.forEach(item => {
-          if (item.quantity > 0 && item.quantityStatus === 'some' && item.vaccineType !== 'AZ') {
+          if (item.quantity > 0 && item.vaccineType !== 'AZ') {
             hasQuantity = true;
           }
         });
