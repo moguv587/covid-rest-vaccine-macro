@@ -151,7 +151,7 @@ var vaccineMacro = {
     .then(res => {
       while (bussiness = res.shift()) {
         let hasQuantity = false;
-        business.vaccineQuantity.list.forEach(item => {
+        bussiness.vaccineQuantity.list.forEach(item => {
           if (item.quantity > 0 && item.vaccineType !== 'AZ') {
             hasQuantity = true;
           }
