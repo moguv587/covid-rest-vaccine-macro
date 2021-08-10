@@ -12,14 +12,14 @@
  * 5. 4번창에서 "Console"탭을 누른다.
  * 6. "원하는 크기의 지도 좌표를 구하는 방법"을 참고하여 내가 원하는 위치의 병원들을 설정한다.
  * 7. 아래의 소스를 전부 복사해서 붙여넣고 실행시킨다.
- * 8. 간절히 바라면 매크로가 나서서 도와준다.
+ * 8. 간절히 바라면 스크립트가 나서서 도와준다.
  * 
  * 
  * 원하는 크기의 지도 좌표를 구하는 방법
  * 1. "https://m.place.naver.com/rest/vaccine?vaccineFilter=used" 에서 원하는 위치, (적당한) 크기를 만든다.
  * 2. "현 지도에서 검색"을 누른다.
  * 3. URL이 아래의 예제와 같이 바뀌는걸 확인한다.
- *    ex) https://m.place.naver.com/rest/vaccine?vaccineFilter=used&x=126.9015361&y=37.4858157&bounds=126.8770000%3B37.4560000%3B126.9260000%3B37.5170000
+ *    ex) https://m.place.naver.com/rest/vaccine?vaccineFilter=used&x=127.1054288&y=37.3594909&bounds=127.1022772%3B37.3577853%3B127.1085804%3B37.3611964
  * 4. url을 복사한 후 아래의 명령어를 값을 바꾸고 실행한다.
       ((url) => {
         coords = decodeURIComponent(url).split("bounds=")[1].split(";")
@@ -60,15 +60,24 @@
 
 var vaccineMacro = {
   data: {
-    delay: 500, // milliseconds
+    delay: 1000, // milliseconds
     timeout: 3000,
+    remember: {
+      term: 60000,
+      organizations: {
+        // "1234567": {update: 1628486735827, leftCounts: 5}
+      }
+    },
     reservation: undefined,
-    choice: [ // 선택한 백신이 없을 경우, 아무거나 고름
-      // "VEN00013", // 화이자
-      // "VEN00014", // 모더나
+    choice: [ // 특정 백신만 선택하고 싶은 경우, 주석(//)을 제거 후 사용. 선택한 백신이 없는(모두 주석 처리된) 경우, 해당 병원의 모든 잔여백신을 대상으로 동작
+      "VEN00013", // 화이자
+      "VEN00014", // 모더나
       // "VEN00015", // 아스트라제네카
       // "VEN00016", // 얀센
-      // "VEN00017", // ????????
+      // "VEN00017", // 노바백스
+      // "VEN00018", // 시노팜
+      // "VEN00019", // 시노백
+      // "VEN00020", // 스푸트니크V
     ],
     coords: {
       bottomRight: {
@@ -82,10 +91,25 @@ var vaccineMacro = {
         y: 37.4560000
       }
     },
+    // sampleAgreement: {
+    //   agreedAt: null, // "2021-01-01 00:00:00",
+    //   locationAgreedAt: null, // "2021-01-01 00:00:00",
+    //   noticeReadAt: null,
+    //   over18: false,
+    //   over50: false,
+    //   under14: false,
+    // },
+    // sampleStatus: {
+    //   certificate: "EXPIRED", // ACTIVE | EXPIRED
+    //   me: "INACTIVE", // ACTIVE | INACTIVE
+    //   over18: false,
+    //   over50: false,
+    //   under14: false,
+    // },
     // sampleOrganizations: {
     //   organizations: [{
     //     address: "서울 금천구 한내로 62",
-    //     leftCounts: 1,
+    //     leftCounts: 0,
     //     orgCode: "11378751",
     //     orgName: "빈센트의원",
     //     status: "INPUT_YET",
@@ -123,7 +147,7 @@ var vaccineMacro = {
     //     agreedAt: "2021-07-28 01:12:37",
     //     locationAgreedAt: "2021-07-28 01:12:37",
     //     under14: false,
-    //     over30: true,
+    //     over50: true,
     //     over18: true
     //   },
     //   status: "CLOSED",
@@ -341,9 +365,22 @@ var vaccineMacro = {
     .then(res => res.organizations.filter(item => item.leftCounts > 0))
     .then(organizations => {
       organizations.forEach(organization => {
-        setTimeout(vaccineMacro.tryReservation, 1, organization)
+        !vaccineMacro.data.remember.organizations[organization.orgCode] && setTimeout(vaccineMacro.standby, 1, organization)
       });
+      return organizations
     })
+    .then(organizations => {
+      // 트래픽 이슈 또는 AZ와 같이 50대 이상만 신청할 수 있어 백신 수량이 남아 있는 경우, remember 설정값 이내의 요청된 결과 값과 비교하여 다를 경우에만 진행하여 잦은 호출 하지 않도록 개선
+      let now = new Date().getTime();
+      return organizations.filter(item => {
+        return vaccineMacro.data.remember.organizations[item.orgCode] === undefined
+        || vaccineMacro.data.remember.organizations[item.orgCode].leftCounts != item.leftCounts
+        || now - vaccineMacro.data.remember.organizations[item.orgCode].update < vaccineMacro.data.remember.term
+      })
+    })
+    .then(organizations => organizations.map(item => Object.assign({update: (vaccineMacro.data.remember.organizations[item.orgCode] || {}).update || new Date().getTime()}, item)))
+    .then(organizations => Object.fromEntries(organizations.map(item => [item.orgCode, item])))
+    .then(organizations => vaccineMacro.data.remember.organizations = organizations)
     .finally(() => {
       if (vaccineMacro.data.reservation) {
         vaccineMacro.data.coords.bottomRight.x = vaccineMacro.data.reservation.organization.x
@@ -371,6 +408,16 @@ var vaccineMacro = {
         }));
 
         document.getElementById('processFinish').classList.add('on');
+
+        // kakao는 naver와는 달리 성공시 안내 페이지가 없어 페이지 이동 없음
+
+        if (window && window.navigator && window.navigator.vibrate) {
+          // mobile에서 성공시 진동 알림 추가
+          window.navigator.vibrate([500, 250, 500, 250, 500, 250, 500, 250, 500]);
+        }
+
+        // sound 출처: https://mixkit.co/free-sound-effects/clap/
+        (new Audio("https://raw.githubusercontent.com/kimytsc/covid-rest-vaccine-macro/resources/main/sounds/mixkit-conference-audience-clapping-strongly-476.wav")).play()
       } else {
         // 아직이군요.. 더 돌려볼까요?
         delayCheck = vaccineMacro.data.delay - (new Date() - delayCheck);
@@ -380,7 +427,7 @@ var vaccineMacro = {
 
     clearTimeout(abort);
   },
-  tryReservation(organization) {
+  standby(organization) {
     fetch(`/api/v3/org/org_code/${ organization.orgCode }`, {
       method: 'GET',
       headers: {
@@ -406,50 +453,65 @@ var vaccineMacro = {
     })
     .then(res => {
       if (vaccineMacro.data.sampleReservation) {
-        vaccineMacro.data.reservation = vaccineMacro.data.sampleReservation; // testcode
+        vaccineMacro.data.reservation = vaccineMacro.data.sampleReservation;
         return {lefts:[]};
       }
       return res;
     })
     .then(res => {
-      while (vaccine = res.lefts.shift()) {
-        !vaccineMacro.data.reservation && fetch(`/api/v2/reservation`, {
-          method: 'POST',
-          headers: {
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json;charset=UTF-8",
-            // "Origin": "https://vaccine-map.kakao.com",
-            "Accept-Language": "en-us",
-            // "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 KAKAOTALK 9.3.8",
-            // "Referer":"https://vaccine-map.kakao.com/",
-            "Accept-Encoding": "gzip, deflate",
-            // "Connection": "Keep-Alive",
-            // "Keep-Alive": "timeout=5, max=1000"
-          },
-          body: JSON.stringify({
-            from: "Map",
-            vaccineCode: vaccine.vaccineCode,
-            orgCode: res.organization.orgCode,
-            distance: "null"
-          })
-        })
-        .then(reservation => reservation.json())
-        .then(reservation => {
-          switch(reservation.code) {
-            case 'SUCCESS': // 성공
-              vaccineMacro.data.reservation = reservation;
-              break;
-            case 'NO_VACANCY': // 선착순 실패
-            case 'NOT_AVAILABLE': // 잔여백신 접종 예약 가능한 시간이 아닙니다.
-            default:
-              // console.log(new Date().toLocalDateTimeString(), reservation.code, reservation.desc, reservation.organization);
-              break;
-          }
-          vaccineMacro.log('lastResult', `[${ reservation.organization.orgName }] ${ reservation.desc.replace(/\n/g, ' ') }`);
-          return true;
-        });
+      while (vaccine = !vaccineMacro.data.reservation && res.lefts.shift()) {
+        setTimeout(vaccineMacro.reservation, 1, organization, vaccine)
       }
     })
+  },
+  async reservation(organization, vaccine) {
+    var signal = new AbortController();
+    var abort = setTimeout(() => signal.abort(), vaccineMacro.data.timeout);
+
+    await fetch(`/api/v2/reservation`, {
+      method: 'POST',
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json;charset=UTF-8",
+        // "Origin": "https://vaccine-map.kakao.com",
+        "Accept-Language": "en-us",
+        // "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 KAKAOTALK 9.3.8",
+        // "Referer":"https://vaccine-map.kakao.com/",
+        "Accept-Encoding": "gzip, deflate",
+        // "Connection": "Keep-Alive",
+        // "Keep-Alive": "timeout=5, max=1000"
+      },
+      body: JSON.stringify({
+        from: "Map",
+        vaccineCode: vaccine.vaccineCode,
+        orgCode: organization.orgCode,
+        distance: "null"
+      }),
+      signal: signal.signal,
+    })
+    .then(res => res.json())
+    .then(res => {
+      switch(res.code) {
+        case 'SUCCESS': // 성공
+          vaccineMacro.data.reservation = res;
+          break;
+        case 'NO_VACANCY': // 선착순 실패
+        case 'NOT_AVAILABLE': // 잔여백신 접종 예약 가능한 시간이 아닙니다.
+        case 'NO_SUITABLE': // 화이자・모더나는 18세 이상 (2003.12.31 이전 출생자) 부터 예약 가능하며 아스트라제네카는 50세 이상 (1971.12.31 이전 출생자) 부터 예약 가능합니다. 접종 가능한 잔여백신은 백신별 공급시기 및 예방접종 계획에 따라 변경될 수 있습니다.
+        case 'ALREADY_RESERVED': // 백신접종 예약내역이 있거나 이미 접종을 하신 경우 잔여백신 접종 신청이 불가합니다.
+        case 'NOT_REGISTERED': // 백신접종 예약내역이 있거나 이미 접종을 하신 경우 잔여백신 접종 신청이 불가합니다.
+        case 'ERROR_OCCURRED': // 백신접종 예약내역이 있거나 이미 접종을 하신 경우 잔여백신 접종 신청이 불가합니다.
+        case 'ALREADY_REGISTERED': // 백신접종 예약내역이 있거나 이미 접종을 하신 경우 잔여백신 접종 신청이 불가합니다.
+        case 'POSTPONED': // 백신접종 예약내역이 있거나 이미 접종을 하신 경우 잔여백신 접종 신청이 불가합니다.
+        default:
+          // console.log(new Date().toLocalDateTimeString(), reservation.code, reservation.desc, reservation.organization);
+          break;
+      }
+      vaccineMacro.log('lastResult', `[${ res.organization.orgName }] ${ res.desc.replace(/\n/g, ' ') }`);
+      return true;
+    });
+
+    clearTimeout(abort);
   },
   log(type, text) {
     document.getElementById(`${ type }`).innerHTML = text;
@@ -536,7 +598,82 @@ var vaccineMacro = {
     h = ((R * i * 200) || 450).toFixed(0);
 
     return `https://map.kakao.com/etc/saveMap.jsp?SCALE=${ scale }&MX=${ (2.5 * a[0]).toFixed(0) }&MY=${ (2.5 * a[1]).toFixed(0) }&type=roadmap&S=0&IW=${ w }&IH=${ h }&LANG=0&COORDSTM=WCONGNAMUL&logo=kakao_logo`;
-  }
+  },
+  agreementCheck() {
+    return fetch(`/api/v1/agreement`, {
+      method: 'GET',
+      headers: {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json;charset=UTF-8",
+        // "Origin": "https://vaccine-map.kakao.com",
+        "Accept-Language": "en-us",
+        // "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 KAKAOTALK 9.3.8",
+        // "Referer":"https://vaccine-map.kakao.com/",
+        "Accept-Encoding": "gzip, deflate",
+        // "Connection": "Keep-Alive",
+        // "Keep-Alive": "timeout=5, max=1000"
+      },
+    })
+    .then(res => res.json())
+    .then(res => this.data.sampleAgreement || res)
+    .then(res => {
+      if (res.error) {
+        this.log('lastResult', `로그인 후 다시 시도해주세요.`);
+        return false;
+      }
+      if (res.agreedAt === null) {
+        this.log('lastResult', `서비스 이용을 위해서는 본인확인을 위한 카카오 인증서 발급이 필요합니다.<br>카카오톡에서 인증서 발급 후 다시 시도해주세요.`);
+        return false;
+      }
+      if (res.under14 === true) {
+        this.log('lastResult', `만 14세 미만은 서비스를 이용하실 수 없습니다.`);
+        return false;
+      }
+      if (res.over18 !== true) {
+        this.log('lastResult', `잔여백신 접종은 18 세 이상만 가능합니다.`);
+        return false;
+      }
+
+      return this;
+    });
+  },
+  // agreementCheck에서 under14, over18 값이 같이 오고 있어 statusCheck로 체크할 필요가 없어보임
+  // statusCheck() {
+  //   return fetch(`/api/v1/me/status`, {
+  //     method: 'GET',
+  //     headers: {
+  //       "Accept": "application/json, text/plain, */*",
+  //       "Content-Type": "application/json;charset=UTF-8",
+  //       // "Origin": "https://vaccine-map.kakao.com",
+  //       "Accept-Language": "en-us",
+  //       // "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 KAKAOTALK 9.3.8",
+  //       // "Referer":"https://vaccine-map.kakao.com/",
+  //       "Accept-Encoding": "gzip, deflate",
+  //       // "Connection": "Keep-Alive",
+  //       // "Keep-Alive": "timeout=5, max=1000"
+  //     },
+  //   })
+  //   .then(res => res.json())
+  //   .then(res => this.data.sampleStatus || res)
+  //   .then(res => {
+  //     if (res.error) {
+  //       vaccineMacro.log('lastResult', `로그인 후 다시 시도해주세요.`);
+  //       return false;
+  //     }
+
+  //     if (res.under14 === true) {
+  //       vaccineMacro.log('lastResult', `만 14세 미만은 서비스를 이용하실 수 없습니다.`);
+  //       return false;
+  //     }
+  
+  //     if (res.over18 !== true) {
+  //       vaccineMacro.log('lastResult', `잔여백신 접종은 18 세 이상만 가능합니다.`);
+  //       return false;
+  //     }
+
+  //     return true;
+  //   });
+  // }
 };
 
 if (dcs = document.currentScript) {
@@ -553,4 +690,4 @@ if (dcs = document.currentScript) {
   vaccineMacro.data.choice = dcs.getAttribute('choice') && dcs.getAttribute('choice').split(',') || vaccineMacro.data.choice;
 }
 
-vaccineMacro.mounted().init();
+vaccineMacro.mounted().agreementCheck().then(res => res && res.init());

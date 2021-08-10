@@ -11,7 +11,7 @@
       $('#reservation_confirm').addClass('on')[0].click();
  * 5. "원하는 크기의 지도 좌표를 구하는 방법"을 참고하여 내가 원하는 위치의 병원들을 설정한다.
  * 6. 아래의 소스를 전부 복사해서 붙여넣고 실행시킨다.
- * 7. 간절히 바라면 매크로가 나서서 도와준다.
+ * 7. 간절히 바라면 스크립트가 나서서 도와준다.
  * 
  * 
  * 원하는 크기의 지도 좌표를 구하는 방법
@@ -52,15 +52,18 @@
 
 var vaccineMacro = {
   data: {
-    delay: 500, // milliseconds
+    delay: 1000, // milliseconds
     timeout: 3000,
     reservation: undefined,
-    choice: [ // 선택한 백신이 없을 경우, 아무거나 고름
-      // "VEN00013", // 화이자
-      // "VEN00014", // 모더나
+    choice: [ // 특정 백신만 선택하고 싶은 경우, 주석(//)을 제거 후 사용. 선택한 백신이 없는(모두 주석 처리된) 경우, 해당 병원의 모든 잔여백신을 대상으로 동작
+      "VEN00013", // 화이자
+      "VEN00014", // 모더나
       // "VEN00015", // 아스트라제네카
       // "VEN00016", // 얀센
-      // "VEN00017", // ????????
+      // "VEN00017", // 노바백스
+      // "VEN00018", // 시노팜
+      // "VEN00019", // 시노백
+      // "VEN00020", // 스푸트니크V
     ],
     bounds: "https://m.place.naver.com/rest/vaccine?vaccineFilter=used&x=126.9015361&y=37.4858157&bounds=126.8770000%3B37.4560000%3B126.9260000%3B37.5170000",
     // bounds: "126.8770000%3B37.4560000%3B126.9260000%3B37.5170000",
@@ -68,11 +71,14 @@ var vaccineMacro = {
     // sampleOrganizations: [{
     //   id: "19514283",
     //   name: "명소아청소년과의원",
+    //   phone: "02-0000-0000",
     //   roadAddress: "서울 영등포구 도림로38길 4",
     //   x: "126.8971880",
     //   y: "37.4926510",
     //   vaccineQuantity: {
     //     totalQuantity: 0,
+    //     startTime: "0900",
+    //     endTime: "1900",
     //     vaccineOrganizationCode: "11346957",
     //     list: [{
     //       quantity: 0,
@@ -89,6 +95,24 @@ var vaccineMacro = {
   mounted() {
     vaccineMacro.data.bounds = vaccineMacro.data.bounds.indexOf('bounds=') !== -1 && vaccineMacro.data.bounds.substring(vaccineMacro.data.bounds.indexOf("bounds=")+7) || vaccineMacro.data.bounds;
 
+    $('.h_title').html(`<span class="accent"><span id="organizations">0</span>개 리스트에서 잔여백신</span> 예약시도중`);
+    $('.info_box:eq(0) .info_box_inner').html(`<div class="info_item">
+      <strong class="info_title">
+        업데이트 시간<div class="notice"><span id="nowUpdate"></span> 업데이트 시도중</div>
+        <div class="error">
+          <span id="lastUpdate"></span>
+        </div>
+      </strong>
+    </div>
+    <div class="info_item">
+      <strong class="info_title">
+        예약시도 상태
+      </strong>
+      <div class="error" id="lastResult">
+        현재 잔여백신이 없습니다.
+      </div>
+      <dl class="info_list" id="reservationInfo"></dl>
+    </div>`);
     $('.info_box:eq(1) .info_box_inner').html(`<div class="info_item">
       <strong class="info_title">예약시도 위치 확인</strong>
       <div class="error">
@@ -108,6 +132,7 @@ var vaccineMacro = {
     return vaccineMacro;
   },
   async init(start) {
+    vaccineMacro.log('nowUpdate', new Date().toLocalDateTimeString());
     var delayCheck = new Date();
     var signal = new AbortController();
     var abort = setTimeout(() => signal.abort(), vaccineMacro.data.timeout);
@@ -116,23 +141,8 @@ var vaccineMacro = {
     await vaccineMacro.graphql(start, signal)
     .then(res => res.shift())
     .then(res => {
-      $('.h_title').html(`<span class="accent">${ (res.data.rests.businesses.total || 0).toLocaleString() }개 리스트에서 잔여백신</span> 예약시도중`);
-      $('.info_box:eq(0) .info_box_inner').html(`<div class="info_item">
-        <strong class="info_title">
-          업데이트 시간<div class="notice">${ new Date().toLocalDateTimeString() } 업데이트 시도중</div>
-          <div class="error">
-            ${ new Date(res.data.rests.businesses.vaccineLastSave).toLocalDateTimeString() }
-          </div>
-        </strong>
-      </div>
-      <div class="info_item">
-        <strong class="info_title">
-          예약시도 상태
-        </strong>
-        <div class="error">${
-          vaccineMacro.data.reservation && `${ vaccineMacro.data.reservation.datetime } ${ vaccineMacro.data.reservation.name } 예약시도 실패` || '현재 잔여백신이 없습니다.'
-        }</div>
-      </div>`);
+      vaccineMacro.log('lastUpdate', new Date(res.data.rests.businesses.vaccineLastSave).toLocalDateTimeString())
+      vaccineMacro.log('organizations', res.data.rests.businesses.total || 0)
       start = start + res.data.rests.businesses.items.length < res.data.rests.businesses.total ? start + res.data.rests.businesses.items.length : 0;
       return res;
     })
@@ -140,13 +150,56 @@ var vaccineMacro = {
     .then(res => vaccineMacro.data.sampleOrganizations || res)
     .then(res => {
       while (bussiness = res.shift()) {
-        setTimeout(vaccineMacro.standby, 1, bussiness);
+        let hasQuantity = false;
+        business.vaccineQuantity.list.forEach(item => {
+          if (item.quantity > 0 && item.vaccineType !== 'AZ') {
+            hasQuantity = true;
+          }
+        });
+
+        hasQuantity && setTimeout(vaccineMacro.standby, 1, bussiness);
       }
     })
-    .catch(e => {})
     .finally(() => {
-      delayCheck = vaccineMacro.data.delay - (new Date() - delayCheck);
-      setTimeout(vaccineMacro.init, delayCheck < 0 ? 1 : delayCheck, start);
+      if (vaccineMacro.data.reservation) {
+        vaccineMacro.data.bounds = `${ vaccineMacro.data.reservation.x };${ vaccineMacro.data.reservation.y };${ vaccineMacro.data.reservation.x };${ vaccineMacro.data.reservation.y }`;
+
+        vaccineMacro.log('lastResult', '축하합니다! 잔여백신 예약에 성공하셨습니다!');
+        vaccineMacro.log('reservationInfo', ((obj) => {
+          let info = '';
+          for(const d in obj) {
+            info += `<dt class="term">${ d }</dt><dd class="desc"><span class="text">${ obj[d] }</span></dd>`
+          }
+          return info;
+        })({
+          '병원이름': vaccineMacro.data.reservation.name,
+          '전화번호': vaccineMacro.data.reservation.phone,
+          '병원주소': vaccineMacro.data.reservation.roadAddress,
+          '운영종료': `오늘 ${ vaccineMacro.data.reservation.vaccineQuantity.endTime } 까지 (${ new Date().toLocaleDateString() } ${ (['일','월','화','수','목','금','토',])[new Date().getDay()] })`,
+          '병원위치': `<img src="${ vaccineMacro.mapImage(15) }">
+                      <svg xmlns="http://www.w3.org/2000/svg" height="48px" viewBox="0 0 24 24" width="48px" fill="#FA4943" style="width:48px;height:48px;position:absolute;left:201px;top:177px;">
+                        <path d="M0 0h24v24H0V0z" fill="none"/>
+                        <path d="M12 2c3.86 0 7 3.14 7 7 0 5.25-7 13-7 13S5 14.25 5 9c0-3.86 3.14-7 7-7zm-1.53 12L17 7.41 15.6 6l-5.13 5.18L8.4 9.09 7 10.5l3.47 3.5z"/>
+                      </svg>`
+        }));
+
+        $('#reservation_confirm').remove();
+        $('.process_item:eq(2)').addClass('on')
+
+        setTimeout(() => {location.href = `/reservation/success?key=${ vaccineMacro.data.reservation.key }`}, 8000);
+
+        if (window && window.navigator && window.navigator.vibrate) {
+          // mobile에서 성공시 진동 알림 추가
+          window.navigator.vibrate([500, 250, 500, 250, 500, 250, 500, 250, 500]);
+        }
+
+        // sound 출처: https://mixkit.co/free-sound-effects/clap/
+        (new Audio("https://raw.githubusercontent.com/kimytsc/covid-rest-vaccine-macro/resources/main/sounds/mixkit-conference-audience-clapping-strongly-476.wav")).play()
+      } else {
+        // 아직이군요.. 더 돌려볼까요?
+        delayCheck = vaccineMacro.data.delay - (new Date() - delayCheck);
+        setTimeout(vaccineMacro.init, delayCheck < 0 ? 1 : delayCheck, start);
+      }
     });
 
     clearTimeout(abort);
@@ -181,11 +234,14 @@ var vaccineMacro = {
               items {
                 id
                 name
+                phone
                 roadAddress
                 x
                 y
                 vaccineQuantity {
                   totalQuantity
+                  startTime
+                  endTime
                   vaccineOrganizationCode
                   list {
                     quantity
@@ -214,7 +270,10 @@ var vaccineMacro = {
             "모더나": "VEN00014",
             "아스트라제네카": "VEN00015",
             "얀센": "VEN00016",
-            "???": "VEN00017"
+            "노바백스": "VEN00017",
+            "시노팜": "VEN00018",
+            "시노백": "VEN00019",
+            "스푸트니크V": "VEN00020",
           })[vaccine.vaccineType]
         })
       ).filter(vaccine => vaccine.quantity > 0
@@ -236,24 +295,29 @@ var vaccineMacro = {
     .then(res => {
       switch(res.code) {
         case 'SUCCESS':
-          location.href = `/reservation/success?key=${ key }`;
+          vaccineMacro.data.reservation = Object.assign({datetime: new Date().toLocalDateTimeString(), key: key}, bussiness);
           break;
         case 'SOLD_OUT':
         default:
           break;
       }
-      vaccineMacro.data.reservation = Object.assign({datetime: new Date().toLocalDateTimeString()}, bussiness);
+      vaccineMacro.log('lastResult', `[${ bussiness.name }] 예약시도 실패`);
     })
     .catch(e => {
       console.log(e);
       // error
     })
   },
-  mapImage() {
+  log(type, text) {
+    document.getElementById(`${ type }`).innerHTML = text;
+  },
+  mapImage(level) {
     function deg2rad(deg) {
         return deg * (Math.PI/180)
     }
-  
+
+    level = level || 13;
+
     var bounds = decodeURIComponent(vaccineMacro.data.bounds).split(';').map(p => Number(p))
       , x = ((bounds[0] + bounds[2]) / 2).toFixed(7)
       , y = ((bounds[1] + bounds[3]) / 2).toFixed(7)
@@ -263,14 +327,14 @@ var vaccineMacro = {
     dLat = deg2rad(bounds[2]-bounds[0]);
     a = Math.sin(dLat/2) * Math.sin(dLat/2);
     c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    width = (R * c * 100).toFixed(0);
+    width = ((R * c * 100) || 450).toFixed(0);
   
     dLon = deg2rad(bounds[3]-bounds[1]);
     a = Math.cos(deg2rad(x)) * Math.cos(deg2rad(x)) * Math.sin(dLon/2) * Math.sin(dLon/2);
     c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    height = (R * c * 200).toFixed(0);
+    height = ((R * c * 200) || 450).toFixed(0);
   
-    return `https://simg.pstatic.net/static.map/v2/map/staticmap.bin?center=${ x }%2C${ y }&level=13&format=jpg&scale=2&dataversion=162.69&caller=naver_mstore&w=${ width }&h=${ height }`;
+    return `https://simg.pstatic.net/static.map/v2/map/staticmap.bin?center=${ x }%2C${ y }&level=${ level }&format=jpg&scale=1&dataversion=162.69&caller=naver_mstore&w=${ width }&h=${ height }`;
   }
 }
 
